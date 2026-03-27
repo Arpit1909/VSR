@@ -1,0 +1,33 @@
+# macOS requirements (Apple Silicon / Intel)
+# Install steps:
+#   brew install python@3.12 python-tk@3.12
+#   python3.12 -m venv videoEnv
+#   source videoEnv/bin/activate
+#   pip install paddlepaddle==3.0.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+#   pip install -r requirements_mac.txt
+
+albumentations~=1.4.10
+filesplit==3.0.2
+opencv-python==4.11.0.86
+scikit-image==0.25.2
+imgaug==0.4.0
+pyclipper==1.3.0.post6
+lmdb==1.6.2
+PyYAML==6.0.2
+omegaconf==2.3.0
+tqdm==4.67.1
+PySimpleGUI-4-foss==4.60.4.1
+easydict==1.13
+scikit-learn==1.6.1
+pandas==2.2.3
+webdataset==0.2.111
+numpy==2.2.5
+protobuf==6.30.2
+einops==0.8.1
+paddleocr==2.10.0
+paddle2onnx==1.3.1
+# macOS: use standard onnxruntime (supports CoreML/Metal automatically)
+onnxruntime==1.20.1
+# PyTorch for macOS (Metal/MPS acceleration on Apple Silicon)
+torch
+torchvision

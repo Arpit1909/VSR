@@ -134,20 +134,13 @@ class VideoInpaint:
         self.device = get_device()
         self.use_fp16 = use_fp16
         self.use_half = True if self.use_fp16 else False
-        if self.device == torch.device('cpu'):
+        if self.device.type in ('cpu', 'mps'):
             self.use_half = False
-        # Length of sub-video for long video inference.
         self.sub_video_length = sub_video_length
-        # Length of local neighboring frames.'
-        self.neighbor_length = 10
-        # Mask dilation for video and flow masking
-        self.mask_dilation = 4
-        # Stride of global reference frames
-        self.ref_stride = 10
-        # Iterations for RAFT inference
-        self.raft_iter = 20
-        # Stride of global reference frames
-        self.ref_stride = 10
+        self.neighbor_length = int(getattr(config, 'PROPAINTER_NEIGHBOR_LENGTH', 10))
+        self.mask_dilation = int(getattr(config, 'PROPAINTER_MASK_DILATION', 4))
+        self.ref_stride = int(getattr(config, 'PROPAINTER_REF_STRIDE', 10))
+        self.raft_iter = int(getattr(config, 'PROPAINTER_RAFT_ITER', 15))
         # 设置raft模型
         self.fix_raft = self.init_raft_model()
         # 设置fix_flow模型
@@ -182,19 +175,6 @@ class VideoInpaint:
                                               flow_mask_dilates=self.mask_dilation,
                                               mask_dilates=self.mask_dilation)
         w, h = size
-        # for saving the masked frames or video
-        masked_frame_for_save = []
-        for i in range(len(frames)):
-            mask_ = np.expand_dims(np.array(masks_dilated[i]), 2).repeat(3, axis=2) / 255.
-            img = np.array(frames[i])
-            green = np.zeros([h, w, 3])
-            green[:, :, 1] = 255
-            alpha = 0.6
-            # alpha = 1.0
-            fuse_img = (1 - alpha) * img + alpha * green
-            fuse_img = mask_ * fuse_img + (1 - mask_) * img
-            masked_frame_for_save.append(fuse_img.astype(np.uint8))
-
         frames_inp = [np.array(f).astype(np.uint8) for f in frames]
         frames = to_tensors()(frames).unsqueeze(0) * 2 - 1
         flow_masks = to_tensors()(flow_masks).unsqueeze(0)
@@ -224,18 +204,21 @@ class VideoInpaint:
                         flows_f, flows_b = self.fix_raft(frames[:, f - 1:end_f], iters=self.raft_iter)
                     gt_flows_f_list.append(flows_f)
                     gt_flows_b_list.append(flows_b)
-                    torch.cuda.empty_cache()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                 gt_flows_f = torch.cat(gt_flows_f_list, dim=1)
                 gt_flows_b = torch.cat(gt_flows_b_list, dim=1)
                 gt_flows_bi = (gt_flows_f, gt_flows_b)
             else:
                 gt_flows_bi = self.fix_raft(frames, iters=self.raft_iter)
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             if self.use_half:
                 frames, flow_masks, masks_dilated = frames.half(), flow_masks.half(), masks_dilated.half()
                 gt_flows_bi = (gt_flows_bi[0].half(), gt_flows_bi[1].half())
-                fix_flow_complete = self.fix_flow_complete.half()
+                self.fix_flow_complete = self.fix_flow_complete.half()
+                fix_flow_complete = self.fix_flow_complete
                 self.model = self.model.half()
 
             # ---- complete flow ----
@@ -258,7 +241,8 @@ class VideoInpaint:
 
                     pred_flows_f.append(pred_flows_bi_sub[0][:, pad_len_s:e_f - s_f - pad_len_e])
                     pred_flows_b.append(pred_flows_bi_sub[1][:, pad_len_s:e_f - s_f - pad_len_e])
-                    torch.cuda.empty_cache()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
                 pred_flows_f = torch.cat(pred_flows_f, dim=1)
                 pred_flows_b = torch.cat(pred_flows_b, dim=1)
@@ -266,7 +250,8 @@ class VideoInpaint:
             else:
                 pred_flows_bi, _ = fix_flow_complete.forward_bidirect_flow(gt_flows_bi, flow_masks)
                 pred_flows_bi = fix_flow_complete.combine_flow(gt_flows_bi, pred_flows_bi, flow_masks)
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             # ---- image propagation ----
             masked_frames = frames * (1 - masks_dilated)
@@ -291,7 +276,8 @@ class VideoInpaint:
                     updated_masks_sub = updated_local_masks_sub.view(b, t, 1, h, w)
                     updated_frames.append(updated_frames_sub[:, pad_len_s:e_f - s_f - pad_len_e])
                     updated_masks.append(updated_masks_sub[:, pad_len_s:e_f - s_f - pad_len_e])
-                    torch.cuda.empty_cache()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
                 updated_frames = torch.cat(updated_frames, dim=1)
                 updated_masks = torch.cat(updated_masks, dim=1)
@@ -301,7 +287,8 @@ class VideoInpaint:
                                                                        'nearest')
                 updated_frames = frames * (1 - masks_dilated) + prop_imgs.view(b, t, 3, h, w) * masks_dilated
                 updated_masks = updated_local_masks.view(b, t, 1, h, w)
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         ori_frames = frames_inp
         comp_frames = [None] * video_length
@@ -343,7 +330,8 @@ class VideoInpaint:
                     else:
                         comp_frames[idx] = comp_frames[idx].astype(np.float32) * 0.5 + img.astype(np.float32) * 0.5
                     comp_frames[idx] = comp_frames[idx].astype(np.uint8)
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         # save videos frame
         comp_frames = [cv2.cvtColor(i, cv2.COLOR_RGB2BGR) for i in comp_frames]
         return comp_frames
